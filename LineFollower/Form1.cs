@@ -15,9 +15,12 @@ namespace LineFollower
     {
         bool runRobot = false, runSerial = true;
         int input1 = 0, input2 = 0, count = 0, controlMode = 0;
-        double curTime = 0, prevTime = 0, totTime = 0;
+        double curTime = 0, prevTime = 0, elapsed = 0;
         byte leftSensor, rightSensor;
         private Stopwatch stopwatch = new Stopwatch();
+
+        double kp = 0, ki = 0, kd = 0, error = 0, oldError = 0, sum = 0, pidOut = 0, errorIntegral = 0, pidCommand = 0;
+        double proportional = 0, integral = 0, derivative = 0;
 
         bool run = false;
 
@@ -40,8 +43,8 @@ namespace LineFollower
         const int BB_REV = 1;
         const int PID_FWD = 2;
         const int PID_REV = 3;
-        const float DUTY_STEP = (float)244 / (float)100;
-        const float CENTER = (float)0.05;
+        const double DUTY_STEP = (double)244 / (double)100;
+        const double CENTER = (double)0.05;
 
         public Form1()
         {
@@ -71,8 +74,9 @@ namespace LineFollower
         private void loop()
         {
             curTime = stopwatch.ElapsedMilliseconds;
-            totTime = stopwatch.Elapsed.TotalSeconds;
-            toolStripStatusLabel1.Text = totTime.ToString();
+            elapsed = curTime - prevTime;
+            //toolStripStatusLabel1.Text = elapsed.ToString() + "s";
+            toolStripStatusLabel1.Text = stopwatch.Elapsed.TotalSeconds.ToString() + "s";
             if (!runRobot)
             {
                 MotorDrive(MOTOR_STOP, MOTOR_STOP);
@@ -88,18 +92,19 @@ namespace LineFollower
                         BBRev();
                         break;
                     case PID_FWD:
-
+                        PIDControlFWD();
                         break;
                     case PID_REV:
 
                         break;
                 }
             }
+            prevTime = curTime;
         }
 
         private void BBFwd()
         {
-            float position = FindPosition(leftSensor, rightSensor);
+            double position = FindPosition(leftSensor, rightSensor);
 
             if (position >-CENTER && position < CENTER)
             {
@@ -122,7 +127,7 @@ namespace LineFollower
 
         private void BBRev()
         {
-            float position = FindPosition(leftSensor, rightSensor);
+            double position = FindPosition(leftSensor, rightSensor);
 
             if (position > -CENTER && position < CENTER)
             {
@@ -158,18 +163,18 @@ namespace LineFollower
         }
 
         // Find the position of the vehicle with relation to the line.
-        private float FindPosition(byte leftSensor, byte rightSensor)
+        private double FindPosition(byte leftSensor, byte rightSensor)
         {
-            float difference = leftSensor - rightSensor;
-            float position = difference / SENSOR_MAX; // -1 when left of line, 0 when center on line, 1 when right of line
+            double difference = leftSensor - rightSensor;
+            double position = difference / SENSOR_MAX; // -1 when left of line, 0 when center on line, 1 when right of line
 
             return position;
         }
 
         // Convert the commanded duty cycle to a bit output.
-        private byte ConvertDutyCycle(float inDuty)
+        private byte ConvertDutyCycle(double inDuty)
         {
-            float result;
+            double result;
             if (inDuty < LOWER_DEADBAND) // For duty cycles commanded below 1%
             {
                 result = ZERO;
@@ -178,12 +183,12 @@ namespace LineFollower
             {
                 result = DUTY_STEP * inDuty;
             }
-            result = (float)Math.Floor(result);
+            result = (double)Math.Floor(result);
             return (byte)result;
         }
 
         // Command motors to required duty cycle.
-        private void MotorDrive(float leftDuty, float rightDuty)
+        private void MotorDrive(double leftDuty, double rightDuty)
         {
             SendIO(LEFT_MOTOR, ConvertDutyCycle(leftDuty));
             SendIO(RIGHT_MOTOR, ConvertDutyCycle(rightDuty));
@@ -201,6 +206,61 @@ namespace LineFollower
                 runRobot = false;
                 buttonStartStop.BackColor = Color.Red;
             }
+        }
+
+        private void PID()
+        {
+            error = FindPosition(leftSensor,rightSensor);
+            sum += error;
+            proportional = kp * error;
+            
+            derivative = kd * (error - oldError) / elapsed;
+            bool windUp = false, saturation = false;
+
+            pidOut = proportional + integral + derivative;
+
+            if (pidOut > MAX_FWD)
+            {
+                pidCommand = MAX_FWD;
+                saturation = true;
+            }
+            else if (pidOut < MAX_REV)
+            {
+                pidCommand = MAX_REV;
+                saturation = true;
+            }
+            else
+            {
+                pidCommand = pidOut;
+                saturation= false;
+            }
+
+            if (error > 0 && pidOut > 0)
+            {
+                windUp = true;
+            } else if (error < 0 &&  pidOut < 0)
+            {
+                windUp = true;
+            } else
+            {
+                windUp = false;
+            }
+
+            if ((saturation) && (windUp))
+            {
+                integral = 0;
+            } else
+            {
+                integral = ki * sum * elapsed;
+            }
+
+                oldError = error;
+
+        }
+
+        private void PIDControlFWD() {
+            PID();
+            MotorDrive(pidCommand, -pidCommand);
         }
 
         private void getIOtimer_Tick(object sender, EventArgs e)
