@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Data;
 using System.Diagnostics;
@@ -15,7 +16,7 @@ namespace LineFollower
     {
         bool runRobot = false, runSerial = true;
         int input1 = 0, input2 = 0, count = 0, controlMode = 0;
-        double curTime = 0, prevTime = 0, totTime = 0;
+        double curTime = 0, prevTime = 0, totTime = 0, timeDiff = 0;
         byte leftSensor, rightSensor;
         private Stopwatch stopwatch = new Stopwatch();
 
@@ -33,21 +34,35 @@ namespace LineFollower
         const int RIGHT_MOTOR = 3;
         const int SENSOR_MIN = 0;
         const int SENSOR_MAX = 255;
-        const int MAX_FWD = 75;
-        const int MAX_REV = 25;
+        const int MAX_FWD = 100;
+        const int STD_FWD = 70;
+        const int MAX_REV = 40;
         const int MOTOR_STOP = 50;
         const int BB_FWD = 0;
         const int BB_REV = 1;
         const int PID_FWD = 2;
         const int PID_REV = 3;
         const float DUTY_STEP = (float)244 / (float)100;
-        const float CENTER = (float)0.05;
+        const float CENTER = (float)0.2;
+
+
+        const double Kp = 0.25;
+        const double Ki = 0;
+        const double Kd = 0.002;
+        const float SET_POSITION = 0;
+
+        double accError = 0;
+        double lastE = 0;
+
+        double correction, position;
+        double leftDuty, rightDuty;
+
 
         public Form1()
         {
             InitializeComponent();
             stopwatch.Start();
-            
+
 
             if (runSerial)
             {
@@ -56,6 +71,7 @@ namespace LineFollower
                     try
                     {
                         serial.Open();
+                        toolStripSerialStatus.Text = "Connected.";
                     }
                     catch
                     {
@@ -70,9 +86,9 @@ namespace LineFollower
         // Main loop run at end of timer tick.
         private void loop()
         {
-            curTime = stopwatch.ElapsedMilliseconds;
-            totTime = stopwatch.Elapsed.TotalSeconds;
-            toolStripStatusLabel1.Text = totTime.ToString();
+            curTime = (float) stopwatch.ElapsedMilliseconds;
+            toolStripStatusLabel1.Text = curTime.ToString();
+            timeDiff = curTime - prevTime;
             if (!runRobot)
             {
                 MotorDrive(MOTOR_STOP, MOTOR_STOP);
@@ -88,35 +104,36 @@ namespace LineFollower
                         BBRev();
                         break;
                     case PID_FWD:
-
+                        vehicle_control();
                         break;
                     case PID_REV:
-
+                        
                         break;
                 }
             }
+            prevTime = curTime;
         }
 
         private void BBFwd()
         {
             float position = FindPosition(leftSensor, rightSensor);
 
-            if (position >-CENTER && position < CENTER)
+            if (position > -CENTER && position < CENTER)
             {
                 position = 0;
             }
 
-            if (position < 0)
+            if (position > 0)
             {
-                MotorDrive(MAX_FWD, 40);
+                MotorDrive(80, 30);
             }
-            else if (position > 0)
+            else if (position < 0)
             {
-                MotorDrive(40, MAX_FWD);
+                MotorDrive(30, 80);
             }
             else
             {
-                MotorDrive(MAX_FWD, MAX_FWD);
+                MotorDrive(75, 75);
             }
         }
 
@@ -131,11 +148,11 @@ namespace LineFollower
 
             if (position > 0)
             {
-                MotorDrive(MAX_REV, 60);
+                MotorDrive(MAX_REV, MAX_FWD);
             }
             else if (position < 0)
             {
-                MotorDrive(60, MAX_REV);
+                MotorDrive(MAX_FWD, MAX_REV);
             }
             else
             {
@@ -167,9 +184,9 @@ namespace LineFollower
         }
 
         // Convert the commanded duty cycle to a bit output.
-        private byte ConvertDutyCycle(float inDuty)
+        private byte ConvertDutyCycle(double inDuty)
         {
-            float result;
+            double result;
             if (inDuty < LOWER_DEADBAND) // For duty cycles commanded below 1%
             {
                 result = ZERO;
@@ -183,7 +200,7 @@ namespace LineFollower
         }
 
         // Command motors to required duty cycle.
-        private void MotorDrive(float leftDuty, float rightDuty)
+        private void MotorDrive(double leftDuty, double rightDuty)
         {
             SendIO(LEFT_MOTOR, ConvertDutyCycle(leftDuty));
             SendIO(RIGHT_MOTOR, ConvertDutyCycle(rightDuty));
@@ -212,10 +229,11 @@ namespace LineFollower
                 {
                     count = RIGHT_SENSOR;
                 }
-                else {
+                else
+                {
                     count = LEFT_SENSOR;
                 }
-            
+
                 if (serial.BytesToRead >= 4) // Check that the buffer contains a full four byte package.
                 {
                     //toolStripSerialStatus.Text = "Incoming";
@@ -257,7 +275,7 @@ namespace LineFollower
                     }
                 }
             }
-            
+
             loop();
         }
 
@@ -297,14 +315,41 @@ namespace LineFollower
             buttonPIDRev.BackColor = Color.FromArgb(204, 255, 255, 1);
         }
 
-        private void buttonCalibrateWhite_Click(object sender, EventArgs e)
+        void vehicle_control()
         {
-            buttonCalibrateWhite.BackColor = Color.Green;
+            PID_Control();
+            MotorDrive(leftDuty, rightDuty);
         }
 
-        private void buttonCalibrateBlack_Click(object sender, EventArgs e)
+        private void PID_Control()
         {
-            buttonCalibrateBlack.BackColor = Color.Green;
+            position = leftSensor - rightSensor;
+
+            if (position > -CENTER && position < CENTER)
+            {
+                position = 0;
+            }
+            float elapsedTime = (float) curTime - (float)prevTime;
+            double error =  position - SET_POSITION;
+            double rateError = (error - lastE) / elapsedTime;
+            accError += error * elapsedTime;
+
+            double controlSig = ((Kp * error) + (Ki * accError) + (Kd * rateError));
+            
+            
+            correction = controlSig;
+
+            leftDuty = leftDuty + correction;
+            rightDuty = rightDuty + correction;
+
+            prevTime = curTime;
+            lastE = error;
+
+            leftDuty = Math.Max(MAX_REV, Math.Min(MAX_FWD, leftDuty));
+            rightDuty = Math.Max(MAX_REV, Math.Min(MAX_FWD, rightDuty));
+
+
+
         }
     }
 }
